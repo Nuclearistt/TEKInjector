@@ -1,5 +1,5 @@
 #include <vector>
-#include "Windows.h"
+#include <Windows.h>
 #include "detours/detours.h"
 
 using namespace std;
@@ -10,7 +10,7 @@ typedef struct _UNICODE_STRING
     USHORT Length;
     USHORT MaximumLength;
     PWSTR  Buffer;
-} UNICODE_STRING, *PUNICODE_STRING;
+} UNICODE_STRING, * PUNICODE_STRING;
 typedef const UNICODE_STRING* PCUNICODE_STRING;
 typedef struct _LDR_DLL_LOADED_NOTIFICATION_DATA
 {
@@ -19,7 +19,7 @@ typedef struct _LDR_DLL_LOADED_NOTIFICATION_DATA
     PCUNICODE_STRING BaseDllName;
     PVOID DllBase;
     ULONG SizeOfImage;
-} LDR_DLL_LOADED_NOTIFICATION_DATA, *PLDR_DLL_LOADED_NOTIFICATION_DATA;
+} LDR_DLL_LOADED_NOTIFICATION_DATA, * PLDR_DLL_LOADED_NOTIFICATION_DATA;
 //Steam API type definitions
 typedef unsigned __int32 uint32;
 typedef unsigned __int64 uint64, PublishedFileId_t;
@@ -61,9 +61,9 @@ struct DownloadProgress
 };
 
 //Windows NT API function definitions
-typedef VOID (CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(ULONG, PLDR_DLL_LOADED_NOTIFICATION_DATA, PVOID);
-typedef NTSTATUS (NTAPI *LdrRegisterDllNotification_t)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, PVOID, PVOID*);
-typedef NTSTATUS (NTAPI *LdrUnregisterDllNotification_t)(PVOID);
+typedef VOID(CALLBACK* PLDR_DLL_NOTIFICATION_FUNCTION)(ULONG, PLDR_DLL_LOADED_NOTIFICATION_DATA, PVOID);
+typedef NTSTATUS(NTAPI* LdrRegisterDllNotification_t)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, PVOID, PVOID*);
+typedef NTSTATUS(NTAPI* LdrUnregisterDllNotification_t)(PVOID);
 //Steam API function definitions
 typedef bool (*SteamAPI_Init_t)();
 typedef ISteamApps* (*SteamApps_t)();
@@ -71,7 +71,7 @@ typedef ISteamMatchmakingServers* (*SteamMatchmakingServers_t)();
 typedef ISteamUGC* (*SteamUGC_t)();
 typedef ISteamUser* (*SteamUser_t)();
 typedef ISteamUtils* (*SteamUtils_t)();
-typedef HServerListRequest (*RequestServerList_t)(ISteamMatchmakingServers*, uint32, MatchMakingKeyValuePair_t**, uint32, void*);
+typedef HServerListRequest(*RequestServerList_t)(ISteamMatchmakingServers*, uint32, MatchMakingKeyValuePair_t**, uint32, void*);
 typedef bool (*IsAPICallCompleted_t)(ISteamUtils*, uint64, bool*);
 typedef bool (*GetAPICallResult_t)(ISteamUtils*, uint64, void*, int, int, bool*);
 
@@ -116,7 +116,7 @@ bool GetItemInstallInfo(ISteamUGC* pThis, PublishedFileId_t nPublishedFileID, ui
 {
     *punSizeOnDisk = 0; //This is not used by the game so no need to bother about computing directory size
     *pbLegacyItem = false;
-    memcpy(pchFolder, pchBaseModsPath, cchBaseModsPath);
+    strcpy(pchFolder, pchBaseModsPath);
     _ui64toa_s(nPublishedFileID, pchFolder + cchBaseModsPath, MAX_PATH - (size_t)cchBaseModsPath, 10);
     const DWORD dwAttributes = GetFileAttributesA(pchFolder);
     if (dwAttributes == INVALID_FILE_ATTRIBUTES || !(dwAttributes & FILE_ATTRIBUTE_DIRECTORY))
@@ -196,7 +196,8 @@ uint64 SubscribeItem(ISteamUGC* pThis, PublishedFileId_t nPublishedFileID)
 {
     DownloadingMod = nPublishedFileID;
     WCHAR tempFilePath[MAX_PATH]{};
-    wcscpy_s(tempFilePath + GetTempPathW(MAX_PATH, tempFilePath), 17, L"TEKLauncherModId"); //Use temp file to pass mod ID to the launcher, we cannot write to named pipe because TEKLauncher.exe is always an elevated process unlike the game
+    GetTempPathW(MAX_PATH, tempFilePath);
+    wcscat(tempFilePath, L"TEKLauncherModId"); //Use temp file to pass mod ID to the launcher, we cannot write to named pipe because TEKLauncher.exe is always an elevated process unlike the game
     HANDLE tempFile = CreateFileW(tempFilePath, GENERIC_ALL, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
     if (tempFile == INVALID_HANDLE_VALUE)
         return nPublishedFileID;
@@ -227,26 +228,22 @@ uint64* GetAppOwner(ISteamApps* pThis, uint64* pSteamId)
 }
 HServerListRequest RequestInternetServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
 {
-    char* const value = (*ppchFilters)[2].m_szValue;
-    memcpy(value + strlen(value), ",TEKWrapper:1", 14);
+    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
     return RequestInternetServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
 }
 HServerListRequest RequestFriendsServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
 {
-    char* const value = (*ppchFilters)[1].m_szValue;
-    memcpy(value + strlen(value), ",TEKWrapper:1", 14);
+    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
     return RequestFriendsServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
 }
 HServerListRequest RequestFavoritesServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
 {
-    char* const value = (*ppchFilters)[1].m_szValue;
-    memcpy(value + strlen(value), ",TEKWrapper:1", 14);
+    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
     return RequestFavoritesServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
 }
 HServerListRequest RequestHistoryServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
 {
-    char* const value = (*ppchFilters)[1].m_szValue;
-    memcpy(value + strlen(value), ",TEKWrapper:1", 14);
+    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
     return RequestHistoryServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
 }
 bool SteamAPI_Init()
@@ -255,7 +252,7 @@ bool SteamAPI_Init()
     //Get Mods folder path from current directory
     cchBaseModsPath = GetCurrentDirectoryA(MAX_PATH, pchBaseModsPath);
     cchBaseModsPath -= 26;
-    memcpy(pchBaseModsPath + cchBaseModsPath, "Mods\\*", 7);
+    strcpy(pchBaseModsPath + cchBaseModsPath, "Mods\\*");
     cchBaseModsPath += 5;
     //Set Steam App ID to 480
     SetEnvironmentVariableW(L"SteamAppId", L"480");
@@ -272,6 +269,7 @@ bool SteamAPI_Init()
     VirtualProtect(mem.BaseAddress, mem.RegionSize, PAGE_READWRITE, &dwOldProtect);
     vfptr[0] = ReturnTrue;
     vfptr[6] = ReturnTrue;
+    vfptr[7] = ReturnTrue;
     vfptr[20] = GetAppOwner;
     vfptr = *(void***)SteamMatchmakingServers_o();
     //ISteamMatchmakingServers function overrides call original functions under the hood so their addresses need to be saved first
