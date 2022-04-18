@@ -21,6 +21,8 @@ typedef struct _LDR_DLL_LOADED_NOTIFICATION_DATA
     ULONG SizeOfImage;
 } LDR_DLL_LOADED_NOTIFICATION_DATA, * PLDR_DLL_LOADED_NOTIFICATION_DATA;
 //Steam API type definitions
+typedef unsigned __int16 uint16;
+typedef int HServerQuery;
 typedef unsigned __int32 uint32;
 typedef unsigned __int64 uint64, PublishedFileId_t;
 typedef void* HServerListRequest;
@@ -38,6 +40,12 @@ struct ISteamUser
     virtual void Mock1() = 0;
     virtual void Mock2() = 0;
     virtual uint64* GetSteamID(uint64*) = 0;
+};
+struct ISteamMatchmakingRulesResponse
+{
+    virtual void RulesResponded(const char* pchRule, const char* pchValue) = 0;
+    virtual void RulesFailedToRespond() = 0;
+    virtual void RulesRefreshComplete() = 0;
 };
 struct MatchMakingKeyValuePair_t
 {
@@ -65,15 +73,17 @@ typedef VOID(CALLBACK* PLDR_DLL_NOTIFICATION_FUNCTION)(ULONG, PLDR_DLL_LOADED_NO
 typedef NTSTATUS(NTAPI* LdrRegisterDllNotification_t)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, PVOID, PVOID*);
 typedef NTSTATUS(NTAPI* LdrUnregisterDllNotification_t)(PVOID);
 //Steam API function definitions
-typedef bool (*SteamAPI_Init_t)();
-typedef ISteamApps* (*SteamApps_t)();
-typedef ISteamMatchmakingServers* (*SteamMatchmakingServers_t)();
-typedef ISteamUGC* (*SteamUGC_t)();
-typedef ISteamUser* (*SteamUser_t)();
-typedef ISteamUtils* (*SteamUtils_t)();
-typedef HServerListRequest(*RequestServerList_t)(ISteamMatchmakingServers*, uint32, MatchMakingKeyValuePair_t**, uint32, void*);
-typedef bool (*IsAPICallCompleted_t)(ISteamUtils*, uint64, bool*);
-typedef bool (*GetAPICallResult_t)(ISteamUtils*, uint64, void*, int, int, bool*);
+typedef bool(*SteamAPI_Init_t)();
+typedef ISteamApps*(*SteamApps_t)();
+typedef ISteamMatchmakingServers*(*SteamMatchmakingServers_t)();
+typedef ISteamUGC*(*SteamUGC_t)();
+typedef ISteamUser*(*SteamUser_t)();
+typedef ISteamUtils*(*SteamUtils_t)();
+typedef HServerListRequest(*RequestInternetServerList_t)(ISteamMatchmakingServers*, uint32, MatchMakingKeyValuePair_t**, uint32, void*);
+typedef HServerQuery(*ServerRules_t)(ISteamMatchmakingServers*, uint32, uint16, ISteamMatchmakingRulesResponse*);
+typedef void(*CancelServerQuery_t)(ISteamMatchmakingServers*, HServerQuery);
+typedef bool(*IsAPICallCompleted_t)(ISteamUtils*, uint64, bool*);
+typedef bool(*GetAPICallResult_t)(ISteamUtils*, uint64, void*, int, int, bool*);
 
 //Global variables
 static LdrUnregisterDllNotification_t LdrUnregisterDllNotification; //LdrUnregisterDllNotification function pointer
@@ -85,10 +95,9 @@ static SteamMatchmakingServers_t SteamMatchmakingServers_o;
 static SteamUGC_t SteamUGC_o;
 static SteamUser_t SteamUser_o;
 static SteamUtils_t SteamUtils_o;
-static RequestServerList_t RequestInternetServerList_o;
-static RequestServerList_t RequestFriendsServerList_o;
-static RequestServerList_t RequestFavoritesServerList_o;
-static RequestServerList_t RequestHistoryServerList_o;
+static RequestInternetServerList_t RequestInternetServerList_o;
+static ServerRules_t ServerRules_o;
+static CancelServerQuery_t CancelServerQuery_o;
 static IsAPICallCompleted_t IsAPICallCompleted_o;
 static GetAPICallResult_t GetAPICallResult_o;
 static char pchBaseModsPath[MAX_PATH]; //Path to the folder where mods are loaded from
@@ -98,6 +107,42 @@ static PublishedFileId_t DownloadingMod; //ID of the mod currently being downloa
 static DownloadProgress Progress; //Mod download progress buffer
 static HANDLE Pipe = INVALID_HANDLE_VALUE; //Client named pipe handle, this pipe is connected to TEK Launcher to get download progress from it
 static vector<PublishedFileId_t> pvecModIDs; //Installed mod IDs
+
+//Matchmaking rules response handler for enforcing TEKWrapper-powered servers in all categories, defined after global variables to be able to access them
+struct MatchmakingRulesResponseWrapper : public ISteamMatchmakingRulesResponse
+{
+private:
+    ISteamMatchmakingServers* _pSteamMatchmakingServers;
+    ISteamMatchmakingRulesResponse* _original;
+public:
+    HServerQuery Query = 0;
+    inline MatchmakingRulesResponseWrapper(ISteamMatchmakingServers* pSteamMatchmakingServers, ISteamMatchmakingRulesResponse* original)
+    {
+        _pSteamMatchmakingServers = pSteamMatchmakingServers;
+        _original = original;
+    }
+    void RulesResponded(const char* pchRule, const char* pchValue) override
+    {
+        if (!strcmp(pchRule, "SEARCHKEYWORDS_s") && strncmp(pchValue, "TEKWrapper", 10))
+        {
+            CancelServerQuery_o(_pSteamMatchmakingServers, Query);
+            _original->RulesFailedToRespond();
+            delete this;
+        }
+        else
+            _original->RulesResponded(pchRule, pchValue);
+    }
+    void RulesFailedToRespond() override
+    {
+        _original->RulesFailedToRespond();
+        delete this;
+    }
+    void RulesRefreshComplete() override
+    {
+        _original->RulesRefreshComplete();
+        delete this;
+    }
+};
 
 //Local functions
 bool GetAPICallResult(ISteamUtils* pThis, uint64 hSteamAPICall, void* pCallback, int cubCallback, int iCallbackExpected, bool* pbFailed)
@@ -231,20 +276,13 @@ HServerListRequest RequestInternetServerList(ISteamMatchmakingServers* pThis, ui
     strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
     return RequestInternetServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
 }
-HServerListRequest RequestFriendsServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
+HServerQuery ServerRules(ISteamMatchmakingServers* pThis, uint32 unIP, uint16 usPort, ISteamMatchmakingRulesResponse* pRequestServersResponse)
 {
-    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
-    return RequestFriendsServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
-}
-HServerListRequest RequestFavoritesServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
-{
-    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
-    return RequestFavoritesServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
-}
-HServerListRequest RequestHistoryServerList(ISteamMatchmakingServers* pThis, uint32 iApp, MatchMakingKeyValuePair_t** ppchFilters, uint32 nFilters, void* pRequestServersResponse)
-{
-    strcat((*ppchFilters)[nFilters - 1].m_szValue, ",TEKWrapper:1");
-    return RequestHistoryServerList_o(pThis, iApp, ppchFilters, nFilters, pRequestServersResponse);
+
+    MatchmakingRulesResponseWrapper* wrapper = new MatchmakingRulesResponseWrapper(pThis, pRequestServersResponse);
+    HServerQuery query = ServerRules_o(pThis, unIP, usPort, wrapper);
+    wrapper->Query = query;
+    return query;
 }
 bool SteamAPI_Init()
 {
@@ -273,14 +311,11 @@ bool SteamAPI_Init()
     vfptr[20] = GetAppOwner;
     vfptr = *(void***)SteamMatchmakingServers_o();
     //ISteamMatchmakingServers function overrides call original functions under the hood so their addresses need to be saved first
-    RequestInternetServerList_o = (RequestServerList_t)vfptr[0];
-    RequestFriendsServerList_o = (RequestServerList_t)vfptr[2];
-    RequestFavoritesServerList_o = (RequestServerList_t)vfptr[3];
-    RequestHistoryServerList_o = (RequestServerList_t)vfptr[4];
+    RequestInternetServerList_o = (RequestInternetServerList_t)vfptr[0];
+    ServerRules_o = (ServerRules_t)vfptr[15];
+    CancelServerQuery_o = (CancelServerQuery_t)vfptr[16];
     vfptr[0] = RequestInternetServerList;
-    vfptr[2] = RequestFriendsServerList;
-    vfptr[3] = RequestFavoritesServerList;
-    vfptr[4] = RequestHistoryServerList;
+    vfptr[15] = ServerRules;
     vfptr = *(void***)SteamUGC_o();
     vfptr[25] = SubscribeItem;
     vfptr[27] = GetNumSubscribedItems;
